@@ -4,9 +4,6 @@ set -o errexit -o pipefail -o nounset
 
 source /utils.sh
 
-NEW_RELEASE=${GITHUB_REF##*/v}
-NEW_RELEASE=${NEW_RELEASE##*/}
-
 export HOME=/home/builder
 
 # Run pre script
@@ -18,8 +15,6 @@ if [[ -n "${INPUT_PRESCRIPT}" ]]; then
 fi
 
 echo "::group::Setup"
-
-echo "Creating release $NEW_RELEASE"
 
 echo "Getting AUR SSH Public keys"
 ssh-keyscan aur.archlinux.org >>$HOME/.ssh/known_hosts
@@ -58,15 +53,11 @@ echo "::group::Build"
 echo "::group::Build::Prepare"
 echo "Current directory: $(pwd)"
 
-echo "Update the PKGBUILD with the new version [${NEW_RELEASE}]"
-sed -i "s/^pkgver=.*/pkgver=${NEW_RELEASE}/g" PKGBUILD
-sed -i "s/^pkgrel=.*/pkgrel=1/g" PKGBUILD
-
 echo "Update the PKGBUILD with the new checksums"
 updpkgsums
 echo "new_sha256sums=$(grep sha256sums PKGBUILD)"
 
-echo "The new PKGBUILD is:"
+echo "The PKGBUILD is:"
 cat PKGBUILD
 
 echo "::endgroup::Build::Prepare"
@@ -78,12 +69,18 @@ if [[ "${INPUT_TRY_BUILD_AND_INSTALL}" == "true" ]]; then
   echo "::endgroup::Build::Install"
 fi
 
+
+echo "The PKGBUILD is now:"
+cat PKGBUILD
+
 echo "Make the .SRCINFO file"
 makepkg --printsrcinfo >.SRCINFO
 echo "The new .SRCINFO is:"
 cat .SRCINFO
 
 NEW_RELEASE=$(grep pkgver= PKGBUILD | cut -f 2 -d=)
+
+echo "Detected new version is: $NEW_RELEASE "
 
 echo "Clone the AUR repo [${REPO_URL}]"
 git clone "$REPO_URL"
