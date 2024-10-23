@@ -59,8 +59,8 @@ echo "::group::Build::Prepare"
 echo "Current directory: $(pwd)"
 
 echo "Update the PKGBUILD with the new version [${NEW_RELEASE}]"
-sed -i "s/^pkgver.*/pkgver=${NEW_RELEASE}/g" PKGBUILD
-sed -i "s/^pkgrel.*/pkgrel=1/g" PKGBUILD
+sed -i "s/^pkgver=.*/pkgver=${NEW_RELEASE}/g" PKGBUILD
+sed -i "s/^pkgrel=.*/pkgrel=1/g" PKGBUILD
 
 echo "Update the PKGBUILD with the new checksums"
 updpkgsums
