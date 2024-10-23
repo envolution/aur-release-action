@@ -131,6 +131,7 @@ if [[ "$INPUT_UPDATE_PKGBUILD" == "true" || -n "$INPUT_AUR_SUBMODULE_PATH" ]]; t
 
   echo "::group::Push"
   sudo git checkout master
+  sudo git fetch
   sudo git merge "update_${INPUT_PACKAGE_NAME}_to_${NEW_RELEASE}"
   sudo git push origin master
   echo "::endgroup::Push"
