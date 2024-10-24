@@ -130,11 +130,17 @@ if [[ "$INPUT_UPDATE_PKGBUILD" == "true" || -n "$INPUT_AUR_SUBMODULE_PATH" ]]; t
   echo "::endgroup::Commit"
 
   echo "::group::Push"
+  # Ensure we're up to date with remote
+  sudo git fetch origin
   sudo git checkout master
-  sudo git fetch
-  sudo git merge "update_${INPUT_PACKAGE_NAME}_to_${NEW_RELEASE}"
+  # Make sure we're up to date with remote master
+  sudo git pull origin master
+  # Merge our changes
+  sudo git merge "update_${INPUT_PACKAGE_NAME}_to_${NEW_RELEASE}" --no-ff
+  # Push the merged changes
   sudo git push origin master
   echo "::endgroup::Push"
+
 else
   echo "Skipping submodule update and PKGBUILD update"
   echo "::endgroup::Commit"
