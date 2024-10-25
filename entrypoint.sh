@@ -6,151 +6,181 @@ source /utils.sh
 
 export HOME=/home/builder
 
-# Run pre script
-if [[ -n "${INPUT_PRESCRIPT}" ]]; then
-  echo "::group::Running pre script"
-  echo "Running pre script"
-  eval "${INPUT_PRESCRIPT}"
-  echo "::endgroup::Running pre script"
-fi
+debug_git_state() {
+    local context="$1"
+    echo "=== Git Debug Info: ${context} ==="
+    echo "Current directory: $(pwd)"
+    echo "Git branch: $(git branch --show-current)"
+    echo "Git status:"
+    git status
+    echo "Git remotes:"
+    git remote -v
+    echo "=========================="
+}
 
-echo "::group::Setup"
+setup_ssh() {
+    echo "::group::SSH Setup"
+    echo "Getting AUR SSH Public keys"
+    ssh-keyscan aur.archlinux.org >>$HOME/.ssh/known_hosts
 
-echo "Getting AUR SSH Public keys"
-ssh-keyscan aur.archlinux.org >>$HOME/.ssh/known_hosts
+    echo "Writing SSH Private keys to file"
+    echo -e "${INPUT_SSH_PRIVATE_KEY//_/\\n}" >$HOME/.ssh/aur
+    chmod 600 $HOME/.ssh/aur*
+    echo "::endgroup::"
+}
 
-echo "Writing SSH Private keys to file"
-echo -e "${INPUT_SSH_PRIVATE_KEY//_/\\n}" >$HOME/.ssh/aur
+setup_git() {
+    echo "::group::Git Setup"
+    echo "Setting up Git configuration"
+    sudo git config --global user.name "$INPUT_GIT_USERNAME"
+    sudo git config --global user.email "$INPUT_GIT_EMAIL"
 
-chmod 600 $HOME/.ssh/aur*
+    # Add github token to the git credential helper
+    sudo git config --global core.askPass /cred-helper.sh
+    sudo git config --global credential.helper cache
 
-echo "Setting up Git"
-sudo git config --global user.name "$INPUT_GIT_USERNAME"
-sudo git config --global user.email "$INPUT_GIT_EMAIL"
+    # Add the working directory as a safe directory
+    sudo git config --global --add safe.directory /github/workspace
+    echo "::endgroup::"
+}
 
-# Add github token to the git credential helper
-sudo git config --global core.askPass /cred-helper.sh
-sudo git config --global credential.helper cache
+prepare_package() {
+    echo "::group::Package Preparation"
+    local REPO_URL="ssh://aur@aur.archlinux.org/${INPUT_PACKAGE_NAME}.git"
+    
+    # Make and enter working directory
+    mkdir -p /tmp/package
+    pushd /tmp/package || exit 1
+    echo "Working in directory: $(pwd)"
 
-# Add the working directory as a save directory
-sudo git config --global --add safe.directory /github/workspace
+    # Copy and update PKGBUILD
+    cp "$GITHUB_WORKSPACE/$INPUT_PKGBUILD_PATH" ./PKGBUILD
+    
+    echo "Updating package checksums"
+    updpkgsums
+    echo "New checksums: $(grep sha256sums PKGBUILD)"
+    
+    echo "Current PKGBUILD contents:"
+    cat PKGBUILD
+    echo "::endgroup::"
+}
 
-REPO_URL="ssh://aur@aur.archlinux.org/${INPUT_PACKAGE_NAME}.git"
+build_package() {
+    if [[ "${INPUT_TRY_BUILD_AND_INSTALL}" == "true" ]]; then
+        echo "::group::Package Build"
+        echo "Building package"
+        makepkg --syncdeps --noconfirm --cleanbuild --rmdeps --install
+        echo "::endgroup::"
+    fi
+}
 
-# Make the working directory
-mkdir -p /tmp/package
+generate_srcinfo() {
+    echo "::group::SRCINFO Generation"
+    echo "Generating .SRCINFO"
+    makepkg --printsrcinfo >.SRCINFO
+    echo "New .SRCINFO contents:"
+    cat .SRCINFO
+    
+    NEW_RELEASE=$(grep pkgver= PKGBUILD | cut -f 2 -d=)
+    echo "Detected version: $NEW_RELEASE"
+    echo "::endgroup::"
+    
+    echo "$NEW_RELEASE"
+}
 
-# Copy the PKGBUILD file into the working directory
-cp "$GITHUB_WORKSPACE/$INPUT_PKGBUILD_PATH" /tmp/package/PKGBUILD
+update_aur_repo() {
+    local new_version="$1"
+    local repo_url="ssh://aur@aur.archlinux.org/${INPUT_PACKAGE_NAME}.git"
+    
+    echo "::group::AUR Update"
+    echo "Cloning AUR repository: ${repo_url}"
+    git clone "$repo_url"
+    
+    echo "Copying new files to AUR repo"
+    cp -f PKGBUILD .SRCINFO "${INPUT_PACKAGE_NAME}/"
+    
+    pushd "${INPUT_PACKAGE_NAME}" || exit 1
+    debug_git_state "Before AUR commit"
+    
+    echo "Committing changes to AUR"
+    git add PKGBUILD .SRCINFO
+    commit "$(generate_commit_message "" "$new_version")"
+    git push
+    
+    debug_git_state "After AUR commit"
+    popd || exit 1
+    echo "::endgroup::"
+}
 
-echo "Changing directory from $PWD to $HOME/package"
-cd /tmp/package
+update_main_repo() {
+    local new_version="$1"
+    
+    echo "::group::Main Repo Update"
+    pushd "$GITHUB_WORKSPACE" || exit 1
+    debug_git_state "Before main repo update"
+    
+    # Create update branch
+    local update_branch="update_${INPUT_PACKAGE_NAME}_to_${new_version}"
+    git checkout -b "$update_branch"
+    
+    # Update PKGBUILD in main repo
+    if [[ "$INPUT_UPDATE_PKGBUILD" == "true" ]]; then
+        echo "Updating PKGBUILD in main repo"
+        cp /tmp/package/PKGBUILD "$INPUT_PKGBUILD_PATH"
+        git add "$INPUT_PKGBUILD_PATH"
+        commit "$(generate_commit_message 'PKGBUILD' "$new_version")"
+    fi
+    
+    # Update submodule if specified
+    if [[ -n "${INPUT_AUR_SUBMODULE_PATH:-}" ]]; then
+        echo "Updating submodule"
+        git submodule update --init "$INPUT_AUR_SUBMODULE_PATH"
+        git add "$INPUT_AUR_SUBMODULE_PATH"
+        commit "$(generate_commit_message 'submodule' "$new_version")"
+    fi
+    
+    # Merge changes back to master
+    debug_git_state "Before merge to master"
+    git checkout master
+    git fetch origin
+    git merge "$update_branch" --no-ff
+    git push origin master
+    
+    debug_git_state "After merge to master"
+    popd || exit 1
+    echo "::endgroup::"
+}
 
-echo "::endgroup::Setup"
+main() {
+    # Run pre-script if specified
+    if [[ -n "${INPUT_PRESCRIPT:-}" ]]; then
+        echo "::group::Pre-script"
+        echo "Running pre-script"
+        eval "${INPUT_PRESCRIPT}"
+        echo "::endgroup::"
+    fi
+    
+    setup_ssh
+    setup_git
+    prepare_package
+    build_package
+    local new_version
+    new_version=$(generate_srcinfo)
+    update_aur_repo "$new_version"
+    
+    if [[ "$INPUT_UPDATE_PKGBUILD" == "true" || -n "${INPUT_AUR_SUBMODULE_PATH:-}" ]]; then
+        update_main_repo "$new_version"
+    fi
+    
+    # Run post-script if specified
+    if [[ -n "${INPUT_POSTSCRIPT:-}" ]]; then
+        echo "::group::Post-script"
+        pushd "$GITHUB_WORKSPACE" || exit 1
+        echo "Running post-script"
+        eval "${INPUT_POSTSCRIPT}"
+        popd || exit 1
+        echo "::endgroup::"
+    fi
+}
 
-echo "::group::Build"
-
-echo "::group::Build::Prepare"
-echo "Current directory: $(pwd)"
-
-echo "Update the PKGBUILD with the new checksums"
-updpkgsums
-echo "new_sha256sums=$(grep sha256sums PKGBUILD)"
-
-echo "The PKGBUILD is:"
-cat PKGBUILD
-
-echo "::endgroup::Build::Prepare"
-
-if [[ "${INPUT_TRY_BUILD_AND_INSTALL}" == "true" ]]; then
-  echo "::group::Build::Install"
-  echo "Try building the package"
-  makepkg --syncdeps --noconfirm --cleanbuild --rmdeps --install
-  echo "::endgroup::Build::Install"
-fi
-
-
-echo "The PKGBUILD is now:"
-cat PKGBUILD
-
-echo "Make the .SRCINFO file"
-makepkg --printsrcinfo >.SRCINFO
-echo "The new .SRCINFO is:"
-cat .SRCINFO
-
-NEW_RELEASE=$(grep pkgver= PKGBUILD | cut -f 2 -d=)
-
-echo "Detected new version is: $NEW_RELEASE "
-
-echo "Clone the AUR repo [${REPO_URL}]"
-git clone "$REPO_URL"
-
-echo "Copy the new PKGBUILD and .SRCINFO files into the AUR repo"
-cp -f PKGBUILD .SRCINFO "$INPUT_PACKAGE_NAME/"
-
-echo "::endgroup::Build"
-
-echo "::group::Commit"
-
-cd "$INPUT_PACKAGE_NAME"
-
-echo "Push the new PKGBUILD and .SRCINFO files to the AUR repo"
-git add PKGBUILD .SRCINFO
-commit "$(generate_commit_message "" "$NEW_RELEASE")"
-git push
-
-if [[ "$INPUT_UPDATE_PKGBUILD" == "true" || -n "$INPUT_AUR_SUBMODULE_PATH" ]]; then
-  echo "::group::Commit::Main_repo"
-  echo "The available branches are:"
-  git branch -a
-  echo "The current branch is: $(git branch --show-current)"
-  echo "Checkout to the temporary branch"
-  sudo git checkout -b "update_${INPUT_PACKAGE_NAME}_to_${NEW_RELEASE}"
-
-  if [[ "$INPUT_UPDATE_PKGBUILD" == "true" ]]; then
-    echo "Update the PKGBUILD file in the main repo"
-    cd "$GITHUB_WORKSPACE"
-    sudo cp /tmp/package/PKGBUILD "$INPUT_PKGBUILD_PATH"
-    sudo git add "$INPUT_PKGBUILD_PATH"
-    commit "$(generate_commit_message 'PKGBUILD' "$NEW_RELEASE")"
-  fi
-
-  if [[ -z "${INPUT_AUR_SUBMODULE_PATH}" ]]; then
-    echo "No submodule path provided, skipping submodule update"
-  else
-    echo "Updating submodule"
-    cd "$GITHUB_WORKSPACE"
-    sudo git submodule update --init "$INPUT_AUR_SUBMODULE_PATH"
-    sudo git add "$INPUT_AUR_SUBMODULE_PATH"
-    commit "$(generate_commit_message 'submodule' "$NEW_RELEASE")"
-  fi
-
-  echo "::endgroup::Commit::Main_repo"
-
-  echo "::endgroup::Commit"
-
-  echo "::group::Push"
-  # Ensure we're up to date with remote
-  sudo git fetch origin
-  sudo git checkout master
-  # Make sure we're up to date with remote master
-  sudo git pull origin master
-  # Merge our changes
-  sudo git merge "update_${INPUT_PACKAGE_NAME}_to_${NEW_RELEASE}" --no-ff
-  # Push the merged changes
-  sudo git push origin master
-  echo "::endgroup::Push"
-
-else
-  echo "Skipping submodule update and PKGBUILD update"
-  echo "::endgroup::Commit"
-fi
-
-# Run post script
-if [[ -n "${INPUT_POSTSCRIPT}" ]]; then
-  cd "$GITHUB_WORKSPACE"
-  echo "::group::Running post script"
-  echo "Running post script"
-  eval "${INPUT_POSTSCRIPT}"
-  echo "::endgroup::Running post script"
-fi
+main "$@"
