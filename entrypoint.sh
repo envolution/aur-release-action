@@ -41,6 +41,7 @@ setup_git() {
 
     # Add the working directory as a safe directory
     sudo git config --global --add safe.directory /github/workspace
+    sleep 1
     echo "::endgroup::"
 }
 
@@ -118,6 +119,8 @@ update_main_repo() {
     echo "::group::Main Repo Update"
     pushd "$GITHUB_WORKSPACE" || exit 1
     debug_git_state "Before main repo update"
+    #workaround test- was getting unsafe directory for /github/workspace
+    setup_git
     
     # Create update branch
     local update_branch="update_${INPUT_PACKAGE_NAME}_to_${new_version}"
