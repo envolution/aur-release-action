@@ -6,6 +6,27 @@ source /utils.sh
 
 export HOME=/home/builder
 
+diagnose_git_issue() {
+    echo "=== Diagnosing Git Ownership Issue ==="
+    
+    # Check current user
+    echo "Current user: $(whoami)"
+    
+    # Check ownership and permissions of /github/workspace
+    echo "Checking ownership and permissions of /github/workspace:"
+    ls -ld /github/workspace
+    
+    # Check Git version
+    echo "Git version: $(git --version)"
+    
+    # Check for safe directories
+    echo "Current safe directories:"
+    git config --global --get-all safe.directory
+    
+    echo "========================================"
+}
+
+
 debug_git_state() {
     local context="$1"
     echo "=== Git Debug Info: ${context} ==="
@@ -32,15 +53,15 @@ setup_ssh() {
 setup_git() {
     echo "::group::Git Setup"
     echo "Setting up Git configuration"
-    sudo git config --global user.name "$INPUT_GIT_USERNAME"
-    sudo git config --global user.email "$INPUT_GIT_EMAIL"
+    git config --global user.name "$INPUT_GIT_USERNAME"
+    git config --global user.email "$INPUT_GIT_EMAIL"
 
     # Add github token to the git credential helper
-    sudo git config --global core.askPass /cred-helper.sh
-    sudo git config --global credential.helper cache
+    git config --global core.askPass /cred-helper.sh
+    git config --global credential.helper cache
 
     # Add the working directory as a safe directory
-    sudo git config --global --add safe.directory /github/workspace
+    git config --global --add safe.directory /github/workspace
     sleep 1
     echo "::endgroup::"
 }
@@ -119,8 +140,8 @@ update_main_repo() {
     echo "::group::Main Repo Update"
     pushd "$GITHUB_WORKSPACE" || exit 1
     debug_git_state "Before main repo update"
-    #workaround test- was getting unsafe directory for /github/workspace
-    setup_git
+
+    diagnose_git_issue
     
     # Create update branch
     local update_branch="update_${INPUT_PACKAGE_NAME}_to_${new_version}"
